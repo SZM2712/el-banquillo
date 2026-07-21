@@ -194,13 +194,17 @@ async function llamarIA(prompt, importancia = "alta") {
   if (MOTOR === "local") throw new Error("LOCAL");
   if (MOTOR === "clave" && importancia === "baja") throw new Error("LOCAL");
   if ((MOTOR === "ia" || MOTOR === "clave") && !API_KEY) {
-    ultimoErrorIA = "Sin API key de Anthropic configurada. Pégala en el campo de la pantalla de inicio, o usa el motor Local / Mi servidor.";
+    ultimoErrorIA = "Sin API key de Anthropic configurada. Pégala en el campo de ajustes de IA, o usa el motor Local / Mi servidor.";
     throw new Error("SIN_API_KEY");
   }
+  const esPropio = MOTOR === "propio" && URL_PROPIA;
+  /* Los túneles gratuitos (localhost.run, etc.) son más inestables que la API de Anthropic: más reintentos y más espera. */
+  const backoffsPropio = [800, 1600, 2400, 3200];
+  const maxIntentos = esPropio ? backoffsPropio.length : 3;
   let ultimoError;
-  for (let intento = 0; intento < 3; intento++) {
+  for (let intento = 0; intento < maxIntentos; intento++) {
     try {
-      if (MOTOR === "propio" && URL_PROPIA) {
+      if (esPropio) {
         /* Servidor propio: Ollama (/api/chat) u OpenAI-compatible (/v1/chat/completions) */
         const esOllama = URL_PROPIA.includes("/api/chat");
         const body = {
@@ -217,7 +221,10 @@ async function llamarIA(prompt, importancia = "alta") {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        const d = await r.json();
+        const txt_ = await r.text();
+        if (!txt_ || txt_.trim().length < 2) throw new Error("Respuesta vacía del túnel — posible corte de conexión");
+        let d;
+        try { d = JSON.parse(txt_); } catch { throw new Error("Respuesta incompleta del túnel — se cortó a medias, reintenta"); }
         const txt = d?.message?.content || d?.choices?.[0]?.message?.content || "";
         if (!txt.trim()) throw new Error("servidor propio: respuesta vacía");
         ultimoErrorIA = "";
@@ -244,10 +251,10 @@ async function llamarIA(prompt, importancia = "alta") {
     } catch (e) {
       ultimoError = e;
       ultimoErrorIA = String(e?.message || e);
-      if (intento < 2) await new Promise(res => setTimeout(res, 700 * (intento + 1)));
+      if (intento < maxIntentos - 1) await new Promise(res => setTimeout(res, esPropio ? backoffsPropio[intento] : 700 * (intento + 1)));
     }
   }
-  console.error("llamarIA falló tras 3 intentos:", ultimoError);
+  console.error(`llamarIA falló tras ${maxIntentos} intentos:`, ultimoError);
   throw ultimoError;
 }
 function diagIA() { return ultimoErrorIA; }
@@ -486,6 +493,7 @@ export default function BanquilloCarrera() {
   const [aviso, setAviso] = useState(null);
   const [testIA, setTestIA] = useState(null);
   const [motorCfg, setMotorCfg] = useState({ motor: "clave", url: "", apiKey: "" });
+  const [mostrarAjustes, setMostrarAjustes] = useState(false);
   const [mostrarKey, setMostrarKey] = useState(false);
   const aplicarMotor = (cfg) => {
     MOTOR = cfg.motor; URL_PROPIA = cfg.url || ""; MODELO_PROPIO = cfg.modelo || "qwen2.5:3b"; API_KEY = cfg.apiKey || "";
@@ -1055,6 +1063,110 @@ export default function BanquilloCarrera() {
     </div>
   );
 
+  const MotorPanel = () => (
+    <>
+      <div style={S.card}>
+        <div style={S.tag}>⚙️ MOTOR DE INTELIGENCIA (controla tu consumo)</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
+          {[["ia", "🧠 IA total", "máxima magia"], ["clave", "⭐ Momentos clave", "~70% menos consumo"], ["local", "📦 Local", "0 tokens"], ["propio", "🖥 Mi servidor", "Ollama/OpenAI"]].map(([id, label, sub]) => (
+            <button key={id} onClick={() => aplicarMotor({ ...motorCfg, motor: id })}
+              style={{ ...S.ghost, padding: "8px 6px", fontSize: 11.5, borderColor: motorCfg.motor === id ? "#FFB020" : "#1E3A2C" }}>
+              {label}<div style={{ fontSize: 9.5, fontWeight: 400, color: "#94A3B8" }}>{sub}</div>
+            </button>
+          ))}
+        </div>
+        {(motorCfg.motor === "clave" || motorCfg.motor === "ia") && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 10.5, color: "#94A3B8", lineHeight: 1.5 }}>
+              {motorCfg.motor === "clave"
+                ? "La IA solo entra en lo que más brilla: charlas de vestuario, convencer fichajes, renovaciones, presidente y el Oráculo. Instrucciones en vivo, prensa, árbitro y mind games usan el motor local."
+                : "Todo pasa por la IA de Anthropic: máxima variedad narrativa, mayor consumo."}
+            </div>
+            <div style={{ position: "relative", marginTop: 8 }}>
+              <input type={mostrarKey ? "text" : "password"} value={motorCfg.apiKey || ""}
+                onChange={e => aplicarMotor({ ...motorCfg, apiKey: e.target.value.trim() })}
+                onPaste={e => { const v = e.clipboardData.getData("text").trim(); if (v) { e.preventDefault(); aplicarMotor({ ...motorCfg, apiKey: v }); } }}
+                placeholder="sk-ant-... (tu API key de Anthropic, opcional)"
+                style={{ ...S.input, fontSize: 12, paddingRight: 68, borderColor: motorCfg.apiKey ? (motorCfg.apiKey.startsWith("sk-ant-") ? "#1FA05A" : "#FFB020") : "#2E7D4F" }}
+                autoComplete="off" spellCheck={false} />
+              <div style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", display: "flex", gap: 2 }}>
+                {motorCfg.apiKey && (
+                  <button type="button" onClick={() => setMostrarKey(v => !v)} title={mostrarKey ? "Ocultar" : "Mostrar"}
+                    style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 14, padding: 6 }}>{mostrarKey ? "🙈" : "👁"}</button>
+                )}
+                {motorCfg.apiKey && (
+                  <button type="button" onClick={() => aplicarMotor({ ...motorCfg, apiKey: "" })} title="Borrar key"
+                    style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 14, padding: 6 }}>✕</button>
+                )}
+              </div>
+            </div>
+            {motorCfg.apiKey && !motorCfg.apiKey.startsWith("sk-ant-") && (
+              <div style={{ fontSize: 10.5, color: "#FFB020", marginTop: 4 }}>⚠️ Las API keys de Anthropic normalmente empiezan con "sk-ant-". Revisa que la hayas copiado completa.</div>
+            )}
+            {motorCfg.apiKey && motorCfg.apiKey.startsWith("sk-ant-") && (
+              <div style={{ fontSize: 10.5, color: "#7FD99F", marginTop: 4 }}>✓ Guardada en este navegador. Pulsa "Probar conexión IA" abajo para confirmar que funciona.</div>
+            )}
+            <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 6, lineHeight: 1.5 }}>
+              Estos dos modos llaman directo a la API de Anthropic desde tu navegador, así que necesitan tu propia API key.{" "}
+              <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#7DD3FC" }}>Consigue una gratis aquí →</a>
+              {" "}Se guarda solo en tu navegador (localStorage), nunca se envía a ningún servidor nuestro ni queda escrita en el código.
+            </div>
+          </div>
+        )}
+        {motorCfg.motor === "propio" && (
+          <div style={{ marginTop: 8 }}>
+            <input value={motorCfg.url} onChange={e => aplicarMotor({ ...motorCfg, url: e.target.value })}
+              placeholder="https://tu-servidor.duckdns.org/banquillo/api/chat" style={{ ...S.input, fontSize: 12 }} />
+            <input value={motorCfg.modelo || ""} onChange={e => aplicarMotor({ ...motorCfg, modelo: e.target.value })}
+              placeholder="Modelo (ej: qwen2.5:3b)" style={{ ...S.input, fontSize: 12, marginTop: 6 }} />
+            <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 6, lineHeight: 1.5 }}>Apunta a tu Ollama (/api/chat) o endpoint OpenAI-compatible (/v1/chat/completions). El juego fuerza formato JSON y limita la respuesta para que sea rápido en CPU.</div>
+          </div>
+        )}
+        <div style={{ fontSize: 10.5, color: motorCfg.motor === "local" || motorCfg.motor === "propio" ? "#7FD99F" : "#94A3B8", marginTop: 8, lineHeight: 1.5, borderTop: "1px solid #1E3A2C", paddingTop: 8 }}>
+          ✅ <b>Local</b> y <b>Mi servidor</b> funcionan sin configurar nada extra una vez desplegado el sitio. <b>IA total</b> y <b>Momentos clave</b> requieren pegar tu propia API key arriba (o darán error 401/HTTP).
+        </div>
+      </div>
+      <button style={{ ...S.ghost, borderColor: "#7DD3FC55" }} onClick={async () => {
+        setTestIA("probando");
+        try {
+          const r = await llamarIA("Responde únicamente con la palabra: CONECTADO");
+          setTestIA({ ok: true, msg: r.slice(0, 60) });
+        } catch (e) {
+          if (e?.message === "LOCAL") setTestIA({ ok: true, msg: "Motor local activo (0 tokens). Todo funciona sin IA." });
+          else setTestIA({ ok: false, msg: diagIA() || String(e?.message || e) });
+        }
+      }}>🔌 PROBAR CONEXIÓN IA</button>
+      {testIA === "probando" && <div style={{ fontSize: 12, color: "#7DD3FC", textAlign: "center" }}>Probando conexión con la IA...</div>}
+      {testIA && testIA !== "probando" && (
+        <div style={{ ...S.card, borderColor: testIA.ok ? "#1FA05A" : "#E5484D", fontSize: 12.5 }}>
+          {testIA.ok ? <>✅ <b>IA conectada.</b> Respuesta: "{testIA.msg}"</> : (
+            <>
+              ❌ <b>La IA no responde.</b>
+              <div style={{ ...S.mono, fontSize: 11, marginTop: 6, color: "#E5484D", wordBreak: "break-all" }}>Error: {testIA.msg}</div>
+              <div style={{ fontSize: 11.5, color: "#94A3B8", marginTop: 6, lineHeight: 1.5 }}>
+                Guía rápida: <b>"Failed to fetch"</b> = el entorno bloquea la conexión (prueba en claude.ai desde un navegador, o revisa tu internet). <b>HTTP 429 / overloaded</b> = límite temporal, espera unos minutos. <b>HTTP 401/403</b> = problema de autenticación del entorno. En todos los casos, el juego sigue funcionando en modo offline 📴.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </>
+  );
+
+  /* Modal de ajustes accesible en cualquier momento sin perder la carrera */
+  const ModalAjustes = () => !mostrarAjustes ? null : (
+    <div onClick={() => setMostrarAjustes(false)} style={{ position: "fixed", inset: 0, background: "#000C", zIndex: 60, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#0E1A14", width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", borderRadius: "16px 16px 0 0", padding: 20, border: "1px solid #1E3A2C", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ ...S.disp, fontSize: 18, color: "#FFB020" }}>⚙️ AJUSTES DE IA</div>
+          <button onClick={() => setMostrarAjustes(false)} style={{ ...S.ghost, width: "auto", padding: "6px 14px", fontSize: 12 }}>Cerrar</button>
+        </div>
+        <div style={{ fontSize: 11.5, color: "#94A3B8" }}>Cambia el motor o actualiza la URL de tu servidor sin perder tu carrera — todo sigue guardado.</div>
+        <MotorPanel />
+      </div>
+    </div>
+  );
+
   if (pantalla === "cargando") return <div style={{ ...S.app, justifyContent: "center", alignItems: "center" }}><div style={{ ...S.disp, fontSize: 24, color: "#FFB020" }}>EL BANQUILLO</div></div>;
 
   /* INICIO */
@@ -1069,91 +1181,7 @@ export default function BanquilloCarrera() {
           {car && !car.despedido && <button style={S.btn} onClick={() => setPantalla(car.modo === "seleccion" ? "seleccionHub" : "hub")}>▶ CONTINUAR — {car.club?.nombre || "Selección"} · T{car.temporada}</button>}
           {car?.despedido && <div style={{ ...S.card, borderColor: "#E5484D", textAlign: "center", fontSize: 13 }}>🚪 Fuiste despedido. La leyenda espera otro capítulo.</div>}
           <button style={car && !car.despedido ? S.ghost : S.btn} onClick={async () => { await borrar(); setCar(null); setPaisAbierto(null); setPantalla("modo"); }}>✦ NUEVA CARRERA</button>
-          <div style={S.card}>
-            <div style={S.tag}>⚙️ MOTOR DE INTELIGENCIA (controla tu consumo)</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
-              {[["ia", "🧠 IA total", "máxima magia"], ["clave", "⭐ Momentos clave", "~70% menos consumo"], ["local", "📦 Local", "0 tokens"], ["propio", "🖥 Mi servidor", "Ollama/OpenAI"]].map(([id, label, sub]) => (
-                <button key={id} onClick={() => aplicarMotor({ ...motorCfg, motor: id })}
-                  style={{ ...S.ghost, padding: "8px 6px", fontSize: 11.5, borderColor: motorCfg.motor === id ? "#FFB020" : "#1E3A2C" }}>
-                  {label}<div style={{ fontSize: 9.5, fontWeight: 400, color: "#94A3B8" }}>{sub}</div>
-                </button>
-              ))}
-            </div>
-            {(motorCfg.motor === "clave" || motorCfg.motor === "ia") && (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 10.5, color: "#94A3B8", lineHeight: 1.5 }}>
-                  {motorCfg.motor === "clave"
-                    ? "La IA solo entra en lo que más brilla: charlas de vestuario, convencer fichajes, renovaciones, presidente y el Oráculo. Instrucciones en vivo, prensa, árbitro y mind games usan el motor local."
-                    : "Todo pasa por la IA de Anthropic: máxima variedad narrativa, mayor consumo."}
-                </div>
-                <div style={{ position: "relative", marginTop: 8 }}>
-                  <input type={mostrarKey ? "text" : "password"} value={motorCfg.apiKey || ""}
-                    onChange={e => aplicarMotor({ ...motorCfg, apiKey: e.target.value.trim() })}
-                    onPaste={e => { const v = e.clipboardData.getData("text").trim(); if (v) { e.preventDefault(); aplicarMotor({ ...motorCfg, apiKey: v }); } }}
-                    placeholder="sk-ant-... (tu API key de Anthropic, opcional)"
-                    style={{ ...S.input, fontSize: 12, paddingRight: 68, borderColor: motorCfg.apiKey ? (motorCfg.apiKey.startsWith("sk-ant-") ? "#1FA05A" : "#FFB020") : "#2E7D4F" }}
-                    autoComplete="off" spellCheck={false} />
-                  <div style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", display: "flex", gap: 2 }}>
-                    {motorCfg.apiKey && (
-                      <button type="button" onClick={() => setMostrarKey(v => !v)} title={mostrarKey ? "Ocultar" : "Mostrar"}
-                        style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 14, padding: 6 }}>{mostrarKey ? "🙈" : "👁"}</button>
-                    )}
-                    {motorCfg.apiKey && (
-                      <button type="button" onClick={() => aplicarMotor({ ...motorCfg, apiKey: "" })} title="Borrar key"
-                        style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 14, padding: 6 }}>✕</button>
-                    )}
-                  </div>
-                </div>
-                {motorCfg.apiKey && !motorCfg.apiKey.startsWith("sk-ant-") && (
-                  <div style={{ fontSize: 10.5, color: "#FFB020", marginTop: 4 }}>⚠️ Las API keys de Anthropic normalmente empiezan con "sk-ant-". Revisa que la hayas copiado completa.</div>
-                )}
-                {motorCfg.apiKey && motorCfg.apiKey.startsWith("sk-ant-") && (
-                  <div style={{ fontSize: 10.5, color: "#7FD99F", marginTop: 4 }}>✓ Guardada en este navegador. Pulsa "Probar conexión IA" abajo para confirmar que funciona.</div>
-                )}
-                <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 6, lineHeight: 1.5 }}>
-                  Estos dos modos llaman directo a la API de Anthropic desde tu navegador, así que necesitan tu propia API key.{" "}
-                  <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#7DD3FC" }}>Consigue una gratis aquí →</a>
-                  {" "}Se guarda solo en tu navegador (localStorage), nunca se envía a ningún servidor nuestro ni queda escrita en el código.
-                </div>
-              </div>
-            )}
-            {motorCfg.motor === "propio" && (
-              <div style={{ marginTop: 8 }}>
-                <input value={motorCfg.url} onChange={e => aplicarMotor({ ...motorCfg, url: e.target.value })}
-                  placeholder="https://tu-servidor.duckdns.org/banquillo/api/chat" style={{ ...S.input, fontSize: 12 }} />
-                <input value={motorCfg.modelo || ""} onChange={e => aplicarMotor({ ...motorCfg, modelo: e.target.value })}
-                  placeholder="Modelo (ej: qwen2.5:3b)" style={{ ...S.input, fontSize: 12, marginTop: 6 }} />
-                <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 6, lineHeight: 1.5 }}>Apunta a tu Ollama (/api/chat) o endpoint OpenAI-compatible (/v1/chat/completions). El juego fuerza formato JSON y limita la respuesta para que sea rápido en CPU.</div>
-              </div>
-            )}
-            <div style={{ fontSize: 10.5, color: motorCfg.motor === "local" || motorCfg.motor === "propio" ? "#7FD99F" : "#94A3B8", marginTop: 8, lineHeight: 1.5, borderTop: "1px solid #1E3A2C", paddingTop: 8 }}>
-              ✅ <b>Local</b> y <b>Mi servidor</b> funcionan sin configurar nada extra una vez desplegado el sitio. <b>IA total</b> y <b>Momentos clave</b> requieren pegar tu propia API key arriba (o darán error 401/HTTP).
-            </div>
-          </div>
-          <button style={{ ...S.ghost, borderColor: "#7DD3FC55" }} onClick={async () => {
-            setTestIA("probando");
-            try {
-              const r = await llamarIA("Responde únicamente con la palabra: CONECTADO");
-              setTestIA({ ok: true, msg: r.slice(0, 60) });
-            } catch (e) {
-              if (e?.message === "LOCAL") setTestIA({ ok: true, msg: "Motor local activo (0 tokens). Todo funciona sin IA." });
-              else setTestIA({ ok: false, msg: diagIA() || String(e?.message || e) });
-            }
-          }}>🔌 PROBAR CONEXIÓN IA</button>
-          {testIA === "probando" && <div style={{ fontSize: 12, color: "#7DD3FC", textAlign: "center" }}>Probando conexión con la IA...</div>}
-          {testIA && testIA !== "probando" && (
-            <div style={{ ...S.card, borderColor: testIA.ok ? "#1FA05A" : "#E5484D", fontSize: 12.5 }}>
-              {testIA.ok ? <>✅ <b>IA conectada.</b> Respuesta: "{testIA.msg}"</> : (
-                <>
-                  ❌ <b>La IA no responde.</b>
-                  <div style={{ ...S.mono, fontSize: 11, marginTop: 6, color: "#E5484D", wordBreak: "break-all" }}>Error: {testIA.msg}</div>
-                  <div style={{ fontSize: 11.5, color: "#94A3B8", marginTop: 6, lineHeight: 1.5 }}>
-                    Guía rápida: <b>"Failed to fetch"</b> = el entorno bloquea la conexión (prueba en claude.ai desde un navegador, o revisa tu internet). <b>HTTP 429 / overloaded</b> = límite temporal, espera unos minutos. <b>HTTP 401/403</b> = problema de autenticación del entorno. En todos los casos, el juego sigue funcionando en modo offline 📴.
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+          <MotorPanel />
           <div style={{ ...S.card, fontSize: 12.5, color: "#94A3B8", lineHeight: 1.6 }}>
             12 países, ligas a tamaño real con ascensos y descensos · plantillas de 23 + cantera · estadísticas y análisis táctico · rumores, lesiones y renovaciones · fichajes que convences hablando · eliminatorias mundialistas dirigibles en vivo · el Oráculo · guardado automático.
           </div>
@@ -1251,7 +1279,10 @@ export default function BanquilloCarrera() {
         <div style={{ padding: "18px 20px 10px", borderBottom: "2px solid #FFB020", position: "sticky", top: 0, background: "#0B1210", zIndex: 5 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
             <div style={{ ...S.disp, fontSize: 19 }}>{car.club.nombre}</div>
-            <div style={{ ...S.mono, fontSize: 11, color: "#94A3B8" }}>T{car.temporada} · J{Math.min(car.jornada, totalJornadas())}/{totalJornadas()}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ ...S.mono, fontSize: 11, color: "#94A3B8" }}>T{car.temporada} · J{Math.min(car.jornada, totalJornadas())}/{totalJornadas()}</div>
+              <button onClick={() => setMostrarAjustes(true)} style={{ background: "none", border: "1px solid #2E7D4F", borderRadius: 8, padding: "4px 8px", fontSize: 13, color: "#F2EFE6", cursor: "pointer" }}>⚙️</button>
+            </div>
           </div>
           <div style={{ fontSize: 11, color: car.division === "d2" ? "#D8B4FE" : "#94A3B8", marginTop: 2 }}>{nombreDivision()} · {car.formacion}</div>
           <div style={{ display: "flex", gap: 11, marginTop: 7, fontSize: 11.5, flexWrap: "wrap" }}>
@@ -1321,6 +1352,7 @@ export default function BanquilloCarrera() {
           </div>
         </div>
         <Toast />
+        <ModalAjustes />
       </div>
     );
   }
@@ -1335,7 +1367,10 @@ export default function BanquilloCarrera() {
     return (
       <div style={S.app}>
         <div style={{ padding: "18px 20px 10px", borderBottom: "2px solid #D8B4FE", position: "sticky", top: 0, background: "#0B1210", zIndex: 5 }}>
-          <div style={{ ...S.disp, fontSize: 19 }}>{pais.bandera} SELECCIÓN DE {pais.nombre.toUpperCase()}</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div style={{ ...S.disp, fontSize: 19 }}>{pais.bandera} SELECCIÓN DE {pais.nombre.toUpperCase()}</div>
+            <button onClick={() => setMostrarAjustes(true)} style={{ background: "none", border: "1px solid #D8B4FE55", borderRadius: 8, padding: "4px 8px", fontSize: 13, color: "#F2EFE6", cursor: "pointer" }}>⚙️</button>
+          </div>
           <div style={{ fontSize: 11.5, color: "#94A3B8", marginTop: 4 }}>⭐ Prestigio {car.prestigio} · {ciclo.fase === "eliminatoria" ? `Eliminatorias: ${ciclo.puntos} pts (necesitas 8+)` : ciclo.fase === "copa" ? `Copa del Mundo · ${ciclo.ronda}` : ciclo.fase === "campeon" ? "🏆 CAMPEONES DEL MUNDO" : ciclo.fase === "fracaso" ? "Eliminados de las clasificatorias" : "Eliminados del Mundial"}</div>
         </div>
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, overflowY: "auto" }}>
@@ -1390,6 +1425,7 @@ export default function BanquilloCarrera() {
           {soyClub() && <button style={S.ghost} onClick={() => setPantalla("hub")}>🏟 Volver a mi club</button>}
         </div>
         <Toast />
+        <ModalAjustes />
       </div>
     );
   }
