@@ -486,6 +486,7 @@ export default function BanquilloCarrera() {
   const [aviso, setAviso] = useState(null);
   const [testIA, setTestIA] = useState(null);
   const [motorCfg, setMotorCfg] = useState({ motor: "clave", url: "", apiKey: "" });
+  const [mostrarKey, setMostrarKey] = useState(false);
   const aplicarMotor = (cfg) => {
     MOTOR = cfg.motor; URL_PROPIA = cfg.url || ""; MODELO_PROPIO = cfg.modelo || "qwen2.5:3b"; API_KEY = cfg.apiKey || "";
     setMotorCfg(cfg);
@@ -1085,10 +1086,34 @@ export default function BanquilloCarrera() {
                     ? "La IA solo entra en lo que más brilla: charlas de vestuario, convencer fichajes, renovaciones, presidente y el Oráculo. Instrucciones en vivo, prensa, árbitro y mind games usan el motor local."
                     : "Todo pasa por la IA de Anthropic: máxima variedad narrativa, mayor consumo."}
                 </div>
-                <input type="password" value={motorCfg.apiKey || ""} onChange={e => aplicarMotor({ ...motorCfg, apiKey: e.target.value })}
-                  placeholder="sk-ant-... (tu API key de Anthropic, opcional)" style={{ ...S.input, fontSize: 12, marginTop: 8 }} autoComplete="off" />
+                <div style={{ position: "relative", marginTop: 8 }}>
+                  <input type={mostrarKey ? "text" : "password"} value={motorCfg.apiKey || ""}
+                    onChange={e => aplicarMotor({ ...motorCfg, apiKey: e.target.value.trim() })}
+                    onPaste={e => { const v = e.clipboardData.getData("text").trim(); if (v) { e.preventDefault(); aplicarMotor({ ...motorCfg, apiKey: v }); } }}
+                    placeholder="sk-ant-... (tu API key de Anthropic, opcional)"
+                    style={{ ...S.input, fontSize: 12, paddingRight: 68, borderColor: motorCfg.apiKey ? (motorCfg.apiKey.startsWith("sk-ant-") ? "#1FA05A" : "#FFB020") : "#2E7D4F" }}
+                    autoComplete="off" spellCheck={false} />
+                  <div style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", display: "flex", gap: 2 }}>
+                    {motorCfg.apiKey && (
+                      <button type="button" onClick={() => setMostrarKey(v => !v)} title={mostrarKey ? "Ocultar" : "Mostrar"}
+                        style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 14, padding: 6 }}>{mostrarKey ? "🙈" : "👁"}</button>
+                    )}
+                    {motorCfg.apiKey && (
+                      <button type="button" onClick={() => aplicarMotor({ ...motorCfg, apiKey: "" })} title="Borrar key"
+                        style={{ background: "none", border: "none", color: "#94A3B8", cursor: "pointer", fontSize: 14, padding: 6 }}>✕</button>
+                    )}
+                  </div>
+                </div>
+                {motorCfg.apiKey && !motorCfg.apiKey.startsWith("sk-ant-") && (
+                  <div style={{ fontSize: 10.5, color: "#FFB020", marginTop: 4 }}>⚠️ Las API keys de Anthropic normalmente empiezan con "sk-ant-". Revisa que la hayas copiado completa.</div>
+                )}
+                {motorCfg.apiKey && motorCfg.apiKey.startsWith("sk-ant-") && (
+                  <div style={{ fontSize: 10.5, color: "#7FD99F", marginTop: 4 }}>✓ Guardada en este navegador. Pulsa "Probar conexión IA" abajo para confirmar que funciona.</div>
+                )}
                 <div style={{ fontSize: 10.5, color: "#94A3B8", marginTop: 6, lineHeight: 1.5 }}>
-                  Estos dos modos llaman directo a la API de Anthropic desde tu navegador, así que necesitan tu propia API key (se genera en <span style={{ color: "#F2EFE6" }}>console.anthropic.com</span>). Se guarda solo en tu navegador (localStorage), nunca se envía a ningún servidor nuestro ni queda escrita en el código.
+                  Estos dos modos llaman directo a la API de Anthropic desde tu navegador, así que necesitan tu propia API key.{" "}
+                  <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#7DD3FC" }}>Consigue una gratis aquí →</a>
+                  {" "}Se guarda solo en tu navegador (localStorage), nunca se envía a ningún servidor nuestro ni queda escrita en el código.
                 </div>
               </div>
             )}
