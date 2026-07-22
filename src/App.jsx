@@ -684,7 +684,11 @@ export default function BanquilloCarrera() {
     setConvo(c => ({ ...c, historia: [...c.historia, { rol: "dt", texto: msg }] }));
     const res = await conversarIA(convo.tipo, convo.ctx, [...convo.historia, { rol: "dt", texto: msg }], msg);
     const esDecision = ["fichaje", "renovacion"].includes(convo.tipo);
-    setConvo(c => ({ ...c, historia: [...c.historia, { rol: "ellos", texto: res.respuesta }], cerrado: !!res.cerrado || (esDecision && res.resultado !== "sigue"), resultado: res.resultado, offline: res.offline }));
+    /* Solo fichaje/renovación se pueden cerrar (acepta/rechaza). El resto (prensa, árbitro, presidente,
+       DT rival) son charlas abiertas: ignoramos cualquier "cerrado" que la IA proponga por su cuenta,
+       el DT las termina manualmente con "Terminar". */
+    const cerrado = esDecision && (!!res.cerrado || res.resultado !== "sigue");
+    setConvo(c => ({ ...c, historia: [...c.historia, { rol: "ellos", texto: res.respuesta }], cerrado, resultado: res.resultado, offline: res.offline }));
     setCar(prev => {
       const nu = {
         ...prev,
