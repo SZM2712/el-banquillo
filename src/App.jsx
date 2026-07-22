@@ -159,6 +159,61 @@ function layoutXI(xi) {
   return out;
 }
 
+/* ---------------- MOTOR POSICIONAL (mapa en vivo) ----------------
+   Cada jugador y el balón tienen una posición (x,y) real en la cancha
+   compartida (0-100). El equipo local ataca hacia y=0 (arriba), el
+   visitante hacia y=100 (abajo) — mismo criterio que layoutXI, pero
+   espejado para el visitante. Cada minuto simulado, avanzaPosiciones
+   mueve el balón hacia la jugada (zona + profundidad según posesión y
+   si hubo remate) y desplaza a los 22 jugadores: el protagonista de la
+   jugada converge fuerte hacia el balón, su equipo empuja/repliega la
+   línea, y el resto gravita levemente en x hacia el lado del balón. */
+const COLX = [18, 50, 82];
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function formaBase(xi, mirror) {
+  const g = { POR: [], DEF: [], MED: [], DEL: [] };
+  xi.forEach(j => (g[j.pos] || g.MED).push(j));
+  const filas = [[g.POR, 90], [g.DEF, 68], [g.MED, 44], [g.DEL, 18]];
+  const out = {};
+  filas.forEach(([arr, y]) => arr.forEach((j, i) => {
+    out[j.id] = { x: (100 / (arr.length + 1)) * (i + 1), y: mirror ? 100 - y : y };
+  }));
+  return out;
+}
+
+function posInicial(xiL, xiR) {
+  return { posL: formaBase(xiL, false), posR: formaBase(xiR, true), ball: { x: 50, y: 50 } };
+}
+
+function avanzaPosiciones(g, { local, zi, protagonista }) {
+  const baseL = formaBase(g.xiL, false), baseR = formaBase(g.xiR, true);
+  const depth = zi != null
+    ? (local ? 12 + rnd() * 12 : 76 + rnd() * 12)
+    : 50 + (local ? -1 : 1) * (6 + rnd() * 16);
+  const bx = clamp((zi != null ? COLX[zi] : 50 + (rnd() - 0.5) * 46) + (rnd() - 0.5) * 10, 6, 94);
+  const by = clamp(depth, 6, 94);
+  const balAnt = g.ball || { x: 50, y: 50 };
+  const ball = { x: lerp(balAnt.x, bx, 0.85), y: lerp(balAnt.y, by, 0.85) };
+
+  const mover = (posPrev, base, dir, esAtaque, protagonistaId) => {
+    const out = {};
+    Object.keys(base).forEach(id => {
+      const b = base[id];
+      const prev = posPrev[id] || b;
+      const lineShift = esAtaque ? dir * 6 : -dir * 4;
+      let tx = b.x, ty = clamp(b.y + lineShift, 4, 96);
+      if (id === protagonistaId) { tx = lerp(tx, ball.x, 0.7); ty = lerp(ty, ball.y, 0.7); }
+      else tx = lerp(tx, ball.x, 0.1);
+      out[id] = { x: lerp(prev.x, tx, 0.5), y: lerp(prev.y, ty, 0.5) };
+    });
+    return out;
+  };
+  const posL = mover(g.posL || {}, baseL, -1, local, local ? protagonista : null);
+  const posR = mover(g.posR || {}, baseR, 1, !local, !local ? protagonista : null);
+  return { posL, posR, ball };
+}
+
 /* ---------------- SIM RÁPIDA ---------------- */
 const golesEsp = (sa, sb) => clamp(1.35 * Math.pow(sa / sb, 1.7), 0.2, 3.8);
 function poisson(lam) { let L = Math.exp(-lam), k = 0, p = 1; do { k++; p *= rnd(); } while (p > L); return k - 1; }
@@ -390,9 +445,11 @@ function stepMin(g) {
   const pL = 0.055 * (fl / fr) * (1 + mom * 0.15);
   const pR = 0.055 * (fr / flD) * (1 - mom * 0.15);
   const roll = rnd();
+  let ziEvento = null, protagonista = null;
   if (roll < pL) {
     const p = pick(g.xiL.filter(j => j.pos !== "POR"));
     const zi = p.pos === "MED" ? 1 : Math.floor(rnd() * 3);
+    ziEvento = zi; protagonista = p.id;
     st.zonasL[zi]++; st.tirosL++; st.heat[6 + zi] += 2;
     ev.push({ min, txt: fill(pick(C.chance), p.nombre.split(" ")[1], ZONAS[zi]), tipo: "chance" });
     if (rnd() < 0.30 + mom * 0.05) {
@@ -402,6 +459,7 @@ function stepMin(g) {
   } else if (roll < pL + pR) {
     const p = pick(g.xiR.filter(j => j.pos !== "POR"));
     const zi = Math.floor(rnd() * 3);
+    ziEvento = zi; protagonista = p.id;
     st.zonasR[zi]++; st.tirosR++;
     if (rnd() < 0.30 - mom * 0.05) { gr++; st.arcoR++; ev.push({ min, txt: `⚠️ Gol de ${p.nombre} para el rival.`, tipo: "golR" }); mom = clamp(mom - 0.35, -1, 1); }
     else { if (rnd() < 0.55) st.arcoR++; ev.push({ min, txt: "¡Nuestro portero responde bajo los palos!", tipo: "fallo" }); }
@@ -428,7 +486,8 @@ function stepMin(g) {
     }
   } else if (rnd() < 0.09) ev.push({ min, txt: pick(C.calm), tipo: "calm" });
   mom = clamp(mom * 0.985 + (rnd() - 0.5) * 0.04, -1, 1);
-  return { ...g, minuto: min, gl, gr, mom, stats: st, mods: g.mods.map(m => ({ ...m, rest: m.rest - 1 })).filter(m => m.rest > 0), feed: [...g.feed, ...ev].slice(-50) };
+  const { posL, posR, ball } = avanzaPosiciones(g, { local, zi: ziEvento, protagonista });
+  return { ...g, minuto: min, gl, gr, mom, stats: st, posL, posR, ball, mods: g.mods.map(m => ({ ...m, rest: m.rest - 1 })).filter(m => m.rest > 0), feed: [...g.feed, ...ev].slice(-50) };
 }
 
 /* ---------------- FINANZAS ---------------- */
@@ -744,6 +803,7 @@ export default function BanquilloCarrera() {
       formacion: car.formacion, stats: statsIniciales(), lesionHoy: false,
       banca: cfg.banca || [], cambios: 0, lesionados: [], jugaron: cfg.xiL.map(j => j.id),
       feed: [{ min: 0, txt: `${cfg.titulo}. ¡Rueda el balón!`, tipo: "info" }],
+      ...posInicial(cfg.xiL, cfg.xiR),
     });
     setPantalla("partido");
   };
@@ -1065,6 +1125,27 @@ export default function BanquilloCarrera() {
       ))}
     </div>
   );
+
+  /* Mapa en vivo del partido: 22 jugadores + balón, posiciones reales que se mueven jugada a jugada */
+  const MapaVivo = ({ m, alto = 210 }) => {
+    const dur = velocidad === "rapido" ? 90 : 1250;
+    const trans = `left ${dur}ms linear, top ${dur}ms linear`;
+    const ball = m.ball || { x: 50, y: 50 };
+    const Punto = (j, pos, color, borde) => (
+      <div key={j.id} style={{ position: "absolute", left: `${pos.x}%`, top: `${pos.y}%`, transform: "translate(-50%,-50%)", transition: trans, width: 15, height: 15, borderRadius: "50%", background: j._golHoy ? "#FFB020" : color, border: `1.5px solid ${borde}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 6.5, fontWeight: 700, color: "#0B1210", boxShadow: "0 1px 3px #0008", zIndex: 1 }}>{j.pos === "POR" ? "P" : ""}</div>
+    );
+    return (
+      <div style={{ position: "relative", height: alto, background: "linear-gradient(180deg,#17452C,#1E5A38 50%,#17452C)", borderRadius: 12, border: "2px solid #2E7D4F", overflow: "hidden" }}>
+        <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1.5, background: "#2E7D4F" }} />
+        <div style={{ position: "absolute", top: "50%", left: "50%", width: 44, height: 44, border: "1.5px solid #2E7D4F", borderRadius: "50%", transform: "translate(-50%,-50%)" }} />
+        <div style={{ position: "absolute", top: 0, left: "26%", right: "26%", height: 26, borderLeft: "1.5px solid #2E7D4F", borderRight: "1.5px solid #2E7D4F", borderBottom: "1.5px solid #2E7D4F" }} />
+        <div style={{ position: "absolute", bottom: 0, left: "26%", right: "26%", height: 26, borderLeft: "1.5px solid #2E7D4F", borderRight: "1.5px solid #2E7D4F", borderTop: "1.5px solid #2E7D4F" }} />
+        {m.xiL.map(j => Punto(j, m.posL?.[j.id] || { x: 50, y: 80 }, "#FFB020", "#0B1210"))}
+        {m.xiR.map(j => Punto(j, m.posR?.[j.id] || { x: 50, y: 20 }, "#E5484D", "#0B1210"))}
+        <div style={{ position: "absolute", left: `${ball.x}%`, top: `${ball.y}%`, transform: "translate(-50%,-50%)", transition: trans, width: 8, height: 8, borderRadius: "50%", background: "#F2EFE6", boxShadow: "0 0 5px #000, 0 0 8px #FFB020", zIndex: 3 }} />
+      </div>
+    );
+  };
 
   const MotorPanel = () => (
     <>
@@ -1855,6 +1936,7 @@ export default function BanquilloCarrera() {
       <div style={{ ...S.app, height: "100vh" }}>
         <Marcador />
         <OverlayCambios />
+        <div style={{ padding: "10px 16px 0" }}><MapaVivo m={match} /></div>
         <div ref={feedRef} style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 6 }}>
           {match.feed.map((e, i) => (
             <div key={i} style={{ fontSize: 13, lineHeight: 1.45, color: colorEv(e.tipo), fontWeight: ["gol", "golR", "roja"].includes(e.tipo) ? 700 : 400 }}>
