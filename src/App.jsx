@@ -300,21 +300,23 @@ function convoLocal(tipo, mensaje, historia) {
 function promptPersona(tipo, ctx, historia, mensaje) {
   const base = {
     presidente: `Eres el PRESIDENTE del club ${ctx.club} (${ctx.division}). Exigente, obsesionado con las finanzas y el objetivo (${ctx.objetivo}). Confianza en el DT: ${ctx.confianza}/100. Caja: ${ctx.dinero}.`,
-    prensa: `Eres un PERIODISTA deportivo incisivo. El DT dirige a ${ctx.club} (${ctx.division}, posición ${ctx.posicion}, último resultado: ${ctx.ultimoResultado}). Buscas titulares, preguntas incómodas pero justas.`,
+    prensa: `Eres un PERIODISTA deportivo incisivo en rueda de prensa. El DT dirige a ${ctx.club} (${ctx.division}, posición ${ctx.posicion}, último resultado: ${ctx.ultimoResultado}). TU ÚNICO TRABAJO es formular UNA pregunta directa e incómoda dirigida al DT (termina con "?"). NUNCA contestes en nombre del DT, nunca narres el partido ni des explicaciones como si fueras el técnico — tú solo preguntas, él responde.`,
     arbitro: `Eres el ÁRBITRO del próximo partido. Estrictamente profesional. Si el DT intenta influenciarte, sale MUY caro (prestigio negativo). Charla cordial sobre reglas está bien.`,
     dtRival: `Eres el DT RIVAL (${ctx.rival}), veterano con colmillo, en la previa. Si el DT usuario te gana el duelo verbal, tu equipo saldrá nervioso (moralRival negativa); si pierde los papeles, se invierte.`,
     fichaje: `Eres ${ctx.jugadorNombre}, futbolista de ${ctx.jugadorEdad} años (${ctx.jugadorPos}, rating ${ctx.jugadorRating}, personalidad ${ctx.jugadorPers}). El DT de ${ctx.club} (${ctx.division}) quiere ficharte. Salario ofrecido ${ctx.salarioOferta}/sem (pides ~${ctx.salarioPedido}). ${ctx.rumor ? "Hay rumores públicos de este interés y te ilusionan un poco." : ""} Un "ambicioso" duda MUCHO en ir a segunda; un "leal" duda en dejar su club; un "temperamental" se ofende fácil. Tras 2-3 intercambios DECIDE.`,
     renovacion: `Eres ${ctx.jugadorNombre} (${ctx.jugadorEdad} años, ${ctx.jugadorPos}, personalidad ${ctx.jugadorPers}), jugador de ${ctx.club}. Tu contrato vence pronto y el DT quiere renovarte. Pides sentirte valorado: minutos, rol y una mejora de salario (~+25%). Según tu personalidad, negocia. Tras 2-3 intercambios DECIDE.`,
   }[tipo];
-  return `${base}
+  return `IMPORTANTE: tú NUNCA eres el DT. El DT es tu interlocutor (el usuario); tú respondes siempre desde tu propio personaje, con tu propio punto de vista, nunca resumiendo ni contestando en nombre del DT.
+
+${base}
 
 Videojuego de fútbol manager. Conversación:
-${historia.map(h => `${h.rol === "dt" ? "DT" : "TÚ"}: ${h.texto}`).join("\n") || "(inicio)"}
+${historia.map(h => `${h.rol === "dt" ? "DT" : "TÚ"}: ${h.texto}`).join("\n") || "(inicio, aún no ha hablado nadie)"}
 
-El DT dice: "${mensaje}"
+El DT te dice ahora: "${mensaje}"
 
 SOLO JSON sin backticks:
-{"respuesta":"<en personaje, 1-3 frases, español>","efectos":{"prestigio":<-3a3>,"confianza":<-5a5>,"moral":<-2a2>,"moralRival":<-2a2>,"dinero":<entero, normalmente 0>},"cerrado":<bool>,"resultado":"<fichaje/renovacion: 'acepta'|'rechaza'|'sigue'; otros: 'sigue'>"}`;
+{"respuesta":"<tu respuesta en personaje, 1-3 frases, español, SIN hablar como si fueras el DT>","efectos":{"prestigio":<-3a3>,"confianza":<-5a5>,"moral":<-2a2>,"moralRival":<-2a2>,"dinero":<entero, normalmente 0>},"cerrado":<bool>,"resultado":"<fichaje/renovacion: 'acepta'|'rechaza'|'sigue'; otros: 'sigue'>"}`;
 }
 
 const IMPORTANCIA_CONVO = { fichaje: "alta", renovacion: "alta", presidente: "alta", prensa: "baja", arbitro: "baja", dtRival: "baja" };
@@ -622,7 +624,8 @@ export default function BanquilloCarrera() {
     const msg = convoInput; setConvoInput(""); setConvoBusy(true);
     setConvo(c => ({ ...c, historia: [...c.historia, { rol: "dt", texto: msg }] }));
     const res = await conversarIA(convo.tipo, convo.ctx, [...convo.historia, { rol: "dt", texto: msg }], msg);
-    setConvo(c => ({ ...c, historia: [...c.historia, { rol: "ellos", texto: res.respuesta }], cerrado: res.cerrado || res.resultado !== "sigue", resultado: res.resultado, offline: res.offline }));
+    const esDecision = ["fichaje", "renovacion"].includes(convo.tipo);
+    setConvo(c => ({ ...c, historia: [...c.historia, { rol: "ellos", texto: res.respuesta }], cerrado: !!res.cerrado || (esDecision && res.resultado !== "sigue"), resultado: res.resultado, offline: res.offline }));
     setCar(prev => {
       const nu = {
         ...prev,
@@ -1729,6 +1732,7 @@ export default function BanquilloCarrera() {
   /* CONVERSACIÓN */
   if (pantalla === "convo" && convo) {
     const titulos = { presidente: "🏛 DESPACHO DEL PRESIDENTE", prensa: "🎤 SALA DE PRENSA", arbitro: "👨‍⚖️ VESTUARIO ARBITRAL", dtRival: "🎭 ZONA MIXTA · DT RIVAL", fichaje: `✍️ ${convo.ctx.jugadorNombre?.toUpperCase() || "NEGOCIACIÓN"}`, renovacion: `🖊 RENOVACIÓN · ${convo.ctx.jugadorNombre?.toUpperCase() || ""}` };
+    const nombreEllos = { presidente: "🏛 Presidente", prensa: "🎤 Periodista", arbitro: "👨‍⚖️ Árbitro", dtRival: `🎭 DT de ${convo.ctx.rival || "rival"}`, fichaje: `⚽ ${convo.ctx.jugadorNombre || "Jugador"}`, renovacion: `⚽ ${convo.ctx.jugadorNombre || "Jugador"}` }[convo.tipo];
     return (
       <div style={{ ...S.app, height: "100vh" }}>
         <div style={{ padding: "16px 20px 10px", borderBottom: "1px solid #1E3A2C", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1738,7 +1742,10 @@ export default function BanquilloCarrera() {
         <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
           {!convo.historia.length && <div style={{ fontSize: 12.5, color: "#4B5E54", textAlign: "center", marginTop: 20 }}>Tú abres la conversación. La IA interpreta tu tono y todo tiene consecuencias.</div>}
           {convo.historia.map((h, i) => (
-            <div key={i} style={{ alignSelf: h.rol === "dt" ? "flex-end" : "flex-start", maxWidth: "85%", background: h.rol === "dt" ? "#FFB02022" : "#12211A", border: "1px solid " + (h.rol === "dt" ? "#FFB02055" : "#1E3A2C"), borderRadius: 12, padding: "9px 13px", fontSize: 13.5, lineHeight: 1.5 }}>{h.texto}</div>
+            <div key={i} style={{ display: "flex", flexDirection: "column", alignSelf: h.rol === "dt" ? "flex-end" : "flex-start", maxWidth: "85%" }}>
+              <div style={{ fontSize: 10, color: "#7DD3FC", marginBottom: 3, textAlign: h.rol === "dt" ? "right" : "left", paddingLeft: 4, paddingRight: 4 }}>{h.rol === "dt" ? "🗣 Tú (DT)" : nombreEllos}</div>
+              <div style={{ background: h.rol === "dt" ? "#FFB02022" : "#12211A", border: "1px solid " + (h.rol === "dt" ? "#FFB02055" : "#1E3A2C"), borderRadius: 12, padding: "9px 13px", fontSize: 13.5, lineHeight: 1.5 }}>{h.texto}</div>
+            </div>
           ))}
           {convoBusy && <div style={{ color: "#4B5E54", fontSize: 12 }}>escribiendo...</div>}
           {convo.offline && <div style={{ fontSize: 10.5, color: "#4B5E54", textAlign: "center" }}>📴 Modo offline: la IA no respondió; el motor local mantiene el juego. Reintenta luego.</div>}
