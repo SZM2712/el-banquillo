@@ -183,20 +183,40 @@ function formaBase(xi, mirror) {
 }
 
 function posInicial(xiL, xiR) {
-  return { posL: formaBase(xiL, false), posR: formaBase(xiR, true), ball: { x: 50, y: 50 } };
+  return { posL: formaBase(xiL, false), posR: formaBase(xiR, true), ball: { x: 50, y: 50 }, avance: 0.35, poseAnt: null };
 }
 
+/* El "avance" (0-1, qué tan cerca del arco rival está la jugada) es un valor que persiste
+   entre minutos: si el mismo equipo sostiene la posesión, sube poco a poco (construcción
+   paciente); si hay pérdida/recuperación de balón, cae de golpe hacia el mediocampo (la
+   disputa vuelve a empezar ahí); solo un remate (chance) lo dispara al área. Esto evita que
+   el balón "teletransporte" cada minuto y da una progresión de jugada coherente. */
 function avanzaPosiciones(g, { local, zi, protagonista }) {
   const baseL = formaBase(g.xiL, false), baseR = formaBase(g.xiR, true);
-  const depth = zi != null
-    ? (local ? 12 + rnd() * 12 : 76 + rnd() * 12)
-    : 50 + (local ? -1 : 1) * (6 + rnd() * 16);
-  const bx = clamp((zi != null ? COLX[zi] : 50 + (rnd() - 0.5) * 46) + (rnd() - 0.5) * 10, 6, 94);
-  const by = clamp(depth, 6, 94);
-  const balAnt = g.ball || { x: 50, y: 50 };
-  const ball = { x: lerp(balAnt.x, bx, 0.85), y: lerp(balAnt.y, by, 0.85) };
+  const chance = zi != null;
+  const cambioPosesion = g.poseAnt != null && g.poseAnt !== local;
+  let avance = g.avance ?? 0.35;
+  if (chance) avance = 0.9 + rnd() * 0.06;
+  else if (cambioPosesion) avance = 0.3 + rnd() * 0.12;
+  else avance = clamp(avance + 0.1 + rnd() * 0.08, 0.3, 0.78);
 
-  const mover = (posPrev, base, dir, esAtaque, protagonistaId) => {
+  const by = clamp(local ? lerp(92, 6, avance) : lerp(8, 94, avance), 6, 94);
+  const bx = clamp((chance ? COLX[zi] : 50 + (rnd() - 0.5) * 36) + (rnd() - 0.5) * 8, 6, 94);
+  const balAnt = g.ball || { x: 50, y: 50 };
+  const ball = { x: lerp(balAnt.x, bx, chance ? 0.85 : 0.55), y: lerp(balAnt.y, by, chance ? 0.85 : 0.55) };
+
+  /* Disputa: el defensor del equipo sin balón más cercano en X sale a marcar/cerrar al balón */
+  const elegirMarcador = (base, xi) => {
+    const candidatos = xi.filter(j => j.pos !== "POR");
+    if (!candidatos.length) return null;
+    let mejor = candidatos[0].id, mejorD = Infinity;
+    candidatos.forEach(j => { const d = Math.abs((base[j.id]?.x ?? 50) - ball.x); if (d < mejorD) { mejorD = d; mejor = j.id; } });
+    return mejor;
+  };
+  const marcadorL = !local ? elegirMarcador(baseL, g.xiL) : null;
+  const marcadorR = local ? elegirMarcador(baseR, g.xiR) : null;
+
+  const mover = (posPrev, base, dir, esAtaque, protagonistaId, marcadorId) => {
     const out = {};
     Object.keys(base).forEach(id => {
       const b = base[id];
@@ -204,14 +224,15 @@ function avanzaPosiciones(g, { local, zi, protagonista }) {
       const lineShift = esAtaque ? dir * 6 : -dir * 4;
       let tx = b.x, ty = clamp(b.y + lineShift, 4, 96);
       if (id === protagonistaId) { tx = lerp(tx, ball.x, 0.7); ty = lerp(ty, ball.y, 0.7); }
+      else if (id === marcadorId) { tx = lerp(tx, ball.x, 0.55); ty = lerp(ty, ball.y, 0.5); }
       else tx = lerp(tx, ball.x, 0.1);
       out[id] = { x: lerp(prev.x, tx, 0.5), y: lerp(prev.y, ty, 0.5) };
     });
     return out;
   };
-  const posL = mover(g.posL || {}, baseL, -1, local, local ? protagonista : null);
-  const posR = mover(g.posR || {}, baseR, 1, !local, !local ? protagonista : null);
-  return { posL, posR, ball };
+  const posL = mover(g.posL || {}, baseL, -1, local, local ? protagonista : null, marcadorL);
+  const posR = mover(g.posR || {}, baseR, 1, !local, !local ? protagonista : null, marcadorR);
+  return { posL, posR, ball, avance, poseAnt: local };
 }
 
 /* ---------------- SIM RÁPIDA ---------------- */
@@ -486,8 +507,8 @@ function stepMin(g) {
     }
   } else if (rnd() < 0.09) ev.push({ min, txt: pick(C.calm), tipo: "calm" });
   mom = clamp(mom * 0.985 + (rnd() - 0.5) * 0.04, -1, 1);
-  const { posL, posR, ball } = avanzaPosiciones(g, { local, zi: ziEvento, protagonista });
-  return { ...g, minuto: min, gl, gr, mom, stats: st, posL, posR, ball, mods: g.mods.map(m => ({ ...m, rest: m.rest - 1 })).filter(m => m.rest > 0), feed: [...g.feed, ...ev].slice(-50) };
+  const { posL, posR, ball, avance, poseAnt } = avanzaPosiciones(g, { local, zi: ziEvento, protagonista });
+  return { ...g, minuto: min, gl, gr, mom, stats: st, posL, posR, ball, avance, poseAnt, mods: g.mods.map(m => ({ ...m, rest: m.rest - 1 })).filter(m => m.rest > 0), feed: [...g.feed, ...ev].slice(-50) };
 }
 
 /* ---------------- FINANZAS ---------------- */
