@@ -81,6 +81,78 @@ function descripcionDe(j) {
   return `${porPos} ${porPers}.`;
 }
 
+/* ---------------- MOTOR: ayudas basadas en atributos individuales ----------------
+   El resultado de un partido ya no depende solo del rating promedio del equipo:
+   el cansancio (según físico), quién dispara (según tiro) y quién ataja (según
+   defensa del portero) usan los atributos reales de cada jugador. */
+function fatigaFactor(xi, minuto) {
+  if (minuto <= 55 || !xi.length) return 1;
+  const fisicoProm = xi.reduce((a, j) => a + atributosDe(j).fisico, 0) / xi.length;
+  const resistencia = clamp((fisicoProm - 50) / 50, 0, 1);
+  const caida = clamp((minuto - 55) / 35, 0, 1) * (0.16 - resistencia * 0.1);
+  return 1 - caida;
+}
+function elegirPeso(arr, pesoFn) {
+  if (!arr.length) return null;
+  const pesos = arr.map(j => Math.max(pesoFn(j), 0.5));
+  const total = pesos.reduce((a, b) => a + b, 0);
+  let r = rnd() * total;
+  for (let i = 0; i < arr.length; i++) { r -= pesos[i]; if (r <= 0) return arr[i]; }
+  return arr[arr.length - 1];
+}
+
+/* ---------------- PROGRESIÓN DE CARRERA: rango, logros, ofertas ---------------- */
+function rangoDT(prestigio) {
+  if (prestigio >= 90) return { txt: "Leyenda", icon: "🐐" };
+  if (prestigio >= 75) return { txt: "Élite", icon: "🌟" };
+  if (prestigio >= 55) return { txt: "Profesional", icon: "🎯" };
+  if (prestigio >= 30) return { txt: "Promesa", icon: "📈" };
+  return { txt: "Amateur", icon: "🌱" };
+}
+const LOGROS = [
+  { id: "primer_partido", nombre: "Debut", desc: "Dirige tu primer partido oficial.", icon: "🎬" },
+  { id: "primera_victoria", nombre: "Primera Victoria", desc: "Gana tu primer partido.", icon: "✅" },
+  { id: "goleada", nombre: "Goleada", desc: "Gana un partido por 4 goles de diferencia o más.", icon: "💥" },
+  { id: "racha5", nombre: "Racha de Fuego", desc: "Encadena 5 victorias seguidas.", icon: "🔥" },
+  { id: "cien_goles", nombre: "Máquina de Gol", desc: "Tu equipo llega a 100 goles en la carrera.", icon: "⚽" },
+  { id: "primer_titulo", nombre: "Primer Título", desc: "Levanta tu primer trofeo como DT.", icon: "🏆" },
+  { id: "ascenso", nombre: "El Ascenso", desc: "Sube de Segunda a Primera División.", icon: "⬆️" },
+  { id: "doble_cargo", nombre: "Doble Cargo", desc: "Dirige a la vez a un club y a una selección.", icon: "🧑‍💼" },
+  { id: "mundial", nombre: "Campeón del Mundo", desc: "Gana la Copa del Mundo con tu selección.", icon: "🌍" },
+  { id: "fichaje_grande", nombre: "Salto de Calidad", desc: "Ficha por un club más grande que el actual.", icon: "📝" },
+  { id: "leyenda", nombre: "Leyenda del Banquillo", desc: "Alcanza 90 de prestigio.", icon: "🐐" },
+];
+function chequearLogros(car, eventos = {}) {
+  const rachaVictorias = eventos.jugoPartido ? (eventos.victoria ? (car.rachaVictorias || 0) + 1 : 0) : (car.rachaVictorias || 0);
+  const golesCarrera = (car.golesCarrera || 0) + (eventos.golesFavor || 0);
+  const set = new Set(car.logros || []);
+  const nuevos = [];
+  const unlock = (id) => { if (!set.has(id)) { set.add(id); nuevos.push(id); } };
+  if (eventos.jugoPartido) unlock("primer_partido");
+  if (eventos.victoria) unlock("primera_victoria");
+  if ((eventos.golDif || 0) >= 4) unlock("goleada");
+  if ((car.titulos || []).length > 0) unlock("primer_titulo");
+  if (eventos.ascenso) unlock("ascenso");
+  if (eventos.mundial) unlock("mundial");
+  if (eventos.dobleCargo) unlock("doble_cargo");
+  if (eventos.fichajeGrande) unlock("fichaje_grande");
+  if (rachaVictorias >= 5) unlock("racha5");
+  if (golesCarrera >= 100) unlock("cien_goles");
+  if (car.prestigio >= 90) unlock("leyenda");
+  return { logros: [...set], rachaVictorias, golesCarrera, nuevos };
+}
+/* Clubes más grandes que el actual: la escalera de ambición del modo carrera */
+function clubesPretendientes(car) {
+  if (!car || car.modo === "seleccion" || !car.club) return [];
+  const candidatos = [];
+  car.mundo.paises.forEach(p => p.d1.forEach(c => {
+    if (c.id === car.clubId && p.id === car.paisId) return;
+    if (c.str >= car.club.str + 7 && c.str <= car.club.str + 24) candidatos.push({ clubId: c.id, paisId: p.id, nombre: c.nombre, bandera: p.bandera, str: c.str, ligaNombre: p.liga });
+  }));
+  candidatos.sort((a, b) => a.str - b.str);
+  return candidatos.slice(0, 3);
+}
+
 function makeJugador(base, pos, paisId, esCantera = false) {
   const rating = esCantera ? clamp(Math.round(base - 15 + rnd() * 8), 40, 65) : clamp(Math.round(base + rnd() * 16 - 8), 45, 96);
   const edad = esCantera ? 16 + Math.floor(rnd() * 3) : 18 + Math.floor(rnd() * 16);
@@ -448,9 +520,12 @@ function stepMin(g) {
   const strL = g.xiL.reduce((a, j) => a + j.rating, 0) / Math.max(g.xiL.length, 1);
   const bonus = g.mods.reduce((a, m) => a + m.ataque + m.presion * 0.5, fBase.atk);
   const bonusD = g.mods.reduce((a, m) => a + m.defensa + m.presion * 0.3, fBase.def);
-  const fl = strL * (1 + 0.045 * clamp(bonus, -5, 5)) * (1 + g.moral * 0.02) * (0.85 ** g.rojasL);
-  const flD = strL * (1 + 0.045 * clamp(bonusD, -5, 5)) * (0.85 ** g.rojasL);
-  const fr = g.strR * (1 + g.moralR * 0.02) * (0.85 ** g.rojasR);
+  /* Cansancio (según físico promedio) y localía pesan sobre la fuerza efectiva del minuto */
+  const fatL = fatigaFactor(g.xiL, min), fatR = fatigaFactor(g.xiR, min);
+  const localia = 1.03;
+  const fl = strL * (1 + 0.045 * clamp(bonus, -5, 5)) * (1 + g.moral * 0.02) * (0.85 ** g.rojasL) * fatL * localia;
+  const flD = strL * (1 + 0.045 * clamp(bonusD, -5, 5)) * (0.85 ** g.rojasL) * fatL * localia;
+  const fr = g.strR * (1 + g.moralR * 0.02) * (0.85 ** g.rojasR) * fatR;
   /* Posesión, pases y celda de calor del minuto */
   const ventaja = fl / (fl + fr);
   const local = rnd() < ventaja + mom * 0.08;
@@ -468,31 +543,39 @@ function stepMin(g) {
   const roll = rnd();
   let ziEvento = null, protagonista = null;
   if (roll < pL) {
-    const p = pick(g.xiL.filter(j => j.pos !== "POR"));
+    const candL = g.xiL.filter(j => j.pos !== "POR");
+    const p = elegirPeso(candL, j => j.rating + atributosDe(j).tiro * 0.6);
     const zi = p.pos === "MED" ? 1 : Math.floor(rnd() * 3);
     ziEvento = zi; protagonista = p.id;
     st.zonasL[zi]++; st.tirosL++; st.heat[6 + zi] += 2;
     ev.push({ min, txt: fill(pick(C.chance), p.nombre.split(" ")[1], ZONAS[zi]), tipo: "chance" });
-    if (rnd() < 0.30 + mom * 0.05) {
+    const porteroR = g.xiR.find(j => j.pos === "POR");
+    const atGK = porteroR ? atributosDe(porteroR).defensa : 60;
+    const pGol = clamp(0.30 + mom * 0.05 + (atributosDe(p).tiro - atGK) * 0.006, 0.08, 0.62);
+    if (rnd() < pGol) {
       gl++; st.arcoL++; g.goleadoresL.push(`${p.nombre} ${min}'`); p._golHoy = (p._golHoy || 0) + 1;
       ev.push({ min, txt: fill(pick(C.gol), p.nombre.toUpperCase(), ""), tipo: "gol" }); mom = clamp(mom + 0.35, -1, 1);
     } else { if (rnd() < 0.55) st.arcoL++; ev.push({ min, txt: pick(C.fallo), tipo: "fallo" }); }
   } else if (roll < pL + pR) {
-    const p = pick(g.xiR.filter(j => j.pos !== "POR"));
+    const candR = g.xiR.filter(j => j.pos !== "POR");
+    const p = elegirPeso(candR, j => j.rating + atributosDe(j).tiro * 0.6);
     const zi = Math.floor(rnd() * 3);
     ziEvento = zi; protagonista = p.id;
     st.zonasR[zi]++; st.tirosR++;
-    if (rnd() < 0.30 - mom * 0.05) { gr++; st.arcoR++; ev.push({ min, txt: `⚠️ Gol de ${p.nombre} para el rival.`, tipo: "golR" }); mom = clamp(mom - 0.35, -1, 1); }
+    const porteroL = g.xiL.find(j => j.pos === "POR");
+    const atGKL = porteroL ? atributosDe(porteroL).defensa : 60;
+    const pGolR = clamp(0.30 - mom * 0.05 + (atributosDe(p).tiro - atGKL) * 0.006, 0.08, 0.62);
+    if (rnd() < pGolR) { gr++; st.arcoR++; ev.push({ min, txt: `⚠️ Gol de ${p.nombre} para el rival.`, tipo: "golR" }); mom = clamp(mom - 0.35, -1, 1); }
     else { if (rnd() < 0.55) st.arcoR++; ev.push({ min, txt: "¡Nuestro portero responde bajo los palos!", tipo: "fallo" }); }
   } else if (roll < pL + pR + 0.025) {
     const nuestro = rnd() < 0.5, p = pick(nuestro ? g.xiL : g.xiR);
     if (rnd() < 0.09) { ev.push({ min, txt: `🟥 ¡ROJA a ${p.nombre}! ${nuestro ? "Quedamos con diez." : "¡Rival con diez!"}`, tipo: "roja" }); if (nuestro) g.rojasL++; else g.rojasR++; }
     else ev.push({ min, txt: `🟨 Amarilla para ${p.nombre}.`, tipo: "tarjeta" });
   } else if (roll < pL + pR + 0.031 && !g.lesionHoy) {
-    /* Lesión con sustitución automática desde el banquillo */
+    /* Lesión con sustitución automática desde el banquillo — más probable con físico bajo */
     const nuestro = rnd() < 0.5;
     if (nuestro) {
-      const p = pick(g.xiL);
+      const p = elegirPeso(g.xiL, j => 70 - atributosDe(j).fisico);
       p.lesion = 1 + Math.floor(rnd() * 4);
       const rep = [...(g.banca || [])].sort((a, b) => ((b.pos === p.pos ? 100 : 0) + b.rating) - ((a.pos === p.pos ? 100 : 0) + a.rating))[0];
       const lesionados = [...(g.lesionados || []), { id: p.id, jornadas: p.lesion }];
@@ -561,6 +644,7 @@ export default function BanquilloCarrera() {
   const [convoBusy, setConvoBusy] = useState(false);
   const [evento, setEvento] = useState(null);
   const [match, setMatch] = useState(null);
+  const [penales, setPenales] = useState(null);
   const [instr, setInstr] = useState("");
   const [instrUsadas, setInstrUsadas] = useState(0);
   const [enviando, setEnviando] = useState(false);
@@ -598,6 +682,27 @@ export default function BanquilloCarrera() {
 
   useEffect(() => { if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight; }, [match?.feed?.length]);
   const toast = (m) => { setAviso(m); setTimeout(() => setAviso(null), 3400); };
+
+  /* Aviso de logros desbloqueados: compara contra la lista anterior sin acoplar cada punto de mutación */
+  const prevLogrosRef = useRef(null);
+  useEffect(() => {
+    const cur = car?.logros || [];
+    const prevArr = prevLogrosRef.current;
+    if (prevArr) {
+      const nuevos = cur.filter(id => !prevArr.includes(id));
+      if (nuevos.length) toast(`🏅 Logro desbloqueado: ${nuevos.map(id => LOGROS.find(l => l.id === id)?.nombre || id).join(", ")}`);
+    }
+    prevLogrosRef.current = cur;
+  }, [car?.logros]);
+
+  /* Potencia del penal en el instante del clic: se calcula desde el reloj (golpeInicio),
+     nunca desde un estado que se re-renderiza 60 veces por segundo — la barra que ve el
+     jugador es una animación CSS pura (misma onda triangular, sin coste de render). */
+  const poderPenalAhora = (p) => {
+    if (!p?.golpeInicio) return 0;
+    const fase = ((performance.now() - p.golpeInicio) / 900) % 2;
+    return Math.round((fase <= 1 ? fase : 2 - fase) * 100);
+  };
 
   /* helpers */
   const soyClub = () => car && car.modo !== "seleccion";
@@ -677,6 +782,7 @@ export default function BanquilloCarrera() {
       calendario: esClub ? makeCalendario(pais[division].map(x => x.id)) : [],
       goleadoresLiga: {}, historialInstr: [], titulos: [], noticias: [], eventosVistos: 0,
       historialStats: [], rumores: [],
+      logros: [], rachaVictorias: 0, golesCarrera: 0, carreraClubes: [],
     };
     c.rumores = esClub ? generarRumores(c) : [];
     setCar(c); guardar(c); setPantalla(esClub ? "hub" : "seleccionHub");
@@ -944,16 +1050,33 @@ export default function BanquilloCarrera() {
         noticias: [...prev.noticias, `J${prev.jornada}: ${prev.club.nombre} ${m.gl}-${m.gr} ${m.rivalObj.nombre}`].slice(-20),
       };
       nu = procesarSemana(nu);
+      nu = { ...nu, ...chequearLogros(nu, { jugoPartido: true, victoria: gane, golDif: m.gl - m.gr, golesFavor: m.gl }) };
       guardar(nu); return nu;
     });
     setPantalla("postpartido");
   };
 
   const cerrarPartidoSeleccion = () => {
+    const m = match;
+    if (m.tipoPartido === "mundialKO" && m.gl === m.gr) {
+      const nuestros = m.xiL.filter(j => j.pos !== "POR").sort((a, b) => (b.rating + atributosDe(b).tiro) - (a.rating + atributosDe(a).tiro));
+      setPenales({
+        rivalNombre: m.nombreR, xiRivalOfens: m.xiR.filter(j => j.pos !== "POR"), porteroRival: m.xiR.find(j => j.pos === "POR"),
+        nuestros, porteroPropio: m.xiL.find(j => j.pos === "POR"),
+        marcadorL: 0, marcadorR: 0, ronda: 0, turno: "L", fase: "elegirZona", zona: null, ultimo: null,
+      });
+      setPantalla("penales");
+      return;
+    }
+    finalizarPartidoSeleccion(null);
+  };
+
+  const finalizarPartidoSeleccion = (penalWin) => {
     setCar(prev => {
       const m = match;
       const sel = JSON.parse(JSON.stringify(prev.seleccion));
-      const gane = m.gl > m.gr, empate = m.gl === m.gr;
+      const gane = penalWin !== null ? penalWin : m.gl > m.gr;
+      const empate = penalWin === null && m.gl === m.gr;
       const resTxt = `${m.gl}-${m.gr} vs ${m.rivalPais.bandera} ${m.rivalPais.nombre}`;
       if (m.tipoPartido === "eliminatoria") {
         sel.ciclo.resultados.push(resTxt);
@@ -968,24 +1091,77 @@ export default function BanquilloCarrera() {
         }
       } else {
         /* KO del mundial */
-        let [gl, gr] = [m.gl, m.gr];
-        if (gl === gr) { const penal = rnd() < 0.5; sel.ciclo.resultados.push(`${resTxt} (${penal ? "ganamos" : "perdimos"} en penales)`); if (!penal) gl = -1; }
+        let gl = m.gl;
+        if (penalWin !== null) { sel.ciclo.resultados.push(`${resTxt} (${penalWin ? "ganamos" : "perdimos"} en penales)`); if (!penalWin) gl = -1; }
         else sel.ciclo.resultados.push(`${sel.ciclo.ronda}: ${resTxt}`);
-        if (gl < gr || gl === -1) sel.ciclo.fase = "eliminado";
+        if (gl < m.gr || gl === -1) sel.ciclo.fase = "eliminado";
         else if (sel.ciclo.ronda === "Cuartos") { sel.ciclo.ronda = "Semifinal"; sel.ciclo.idxKO++; }
         else if (sel.ciclo.ronda === "Semifinal") { sel.ciclo.ronda = "FINAL"; sel.ciclo.idxKO++; }
         else sel.ciclo.fase = "campeon";
       }
-      const nu = {
+      let nu = {
         ...prev, seleccion: sel,
         prestigio: clamp(prev.prestigio + (gane ? 2 : empate ? 0 : -1), 0, 100),
         moral: clamp(prev.moral + (gane ? 1 : -1), -5, 5),
         noticias: [...prev.noticias, `🌍 ${resTxt}`].slice(-20),
       };
+      nu = { ...nu, ...chequearLogros(nu, { mundial: sel.ciclo.fase === "campeon" }) };
       guardar(nu); return nu;
     });
+    setPenales(null);
     setPantalla("seleccionHub");
   };
+
+  /* ---------- TANDA DE PENALES (jugable) ----------
+     Los manejadores leen `penales` directamente (no updater funcional): son
+     clics discretos del usuario, no actualizaciones concurrentes, y así
+     evitamos que StrictMode duplique efectos secundarios (setTimeout) al
+     re-invocar updaters en desarrollo. */
+  const dispararPenal = () => {
+    if (!penales || penales.turno !== "L" || penales.fase !== "golpear") return;
+    const tirador = penales.nuestros[penales.ronda % penales.nuestros.length];
+    const atGK = penales.porteroRival ? atributosDe(penales.porteroRival).defensa : 60;
+    const atTiro = atributosDe(tirador).tiro;
+    const poder = poderPenalAhora(penales);
+    const dulce = poder >= 60 && poder <= 95;
+    const adivina = rnd() < clamp(0.16 + atGK / 300, 0.16, 0.5);
+    let pGol = dulce ? 0.86 : 0.55;
+    pGol += (atTiro - 60) * 0.002;
+    if (adivina) pGol *= dulce ? 0.5 : 0.28;
+    const gol = rnd() < clamp(pGol, 0.06, 0.95);
+    setPenales({ ...penales, marcadorL: penales.marcadorL + (gol ? 1 : 0), fase: "resultado", turno: "L", ultimo: { equipo: "L", zona: penales.zona, gol, tirador: tirador.nombre, adivina } });
+  };
+  const dispararRival = () => {
+    if (!penales) return;
+    const tirador = pick(penales.xiRivalOfens.length ? penales.xiRivalOfens : [{ rating: 65 }]);
+    const atGK = penales.porteroPropio ? atributosDe(penales.porteroPropio).defensa : 60;
+    const zona = Math.floor(rnd() * 3);
+    const adivina = rnd() < clamp(0.16 + atGK / 300, 0.16, 0.5);
+    let pGol = 0.72 + ((tirador.rating || 65) - 65) * 0.004;
+    if (adivina) pGol *= 0.4;
+    const gol = rnd() < clamp(pGol, 0.1, 0.92);
+    setPenales({ ...penales, marcadorR: penales.marcadorR + (gol ? 1 : 0), fase: "resultado", turno: "R", zona, ultimo: { equipo: "R", zona, gol, tirador: tirador.nombre || "Rival", adivina } });
+  };
+  const continuarPenales = () => {
+    if (!penales) return;
+    const p = penales;
+    const rondaCompleta = p.turno === "R";
+    let ronda = p.ronda;
+    if (rondaCompleta) ronda += 1;
+    const { marcadorL, marcadorR } = p;
+    const restantes = Math.max(5 - ronda, 0);
+    const decidido = ronda >= 5 && marcadorL !== marcadorR;
+    const decididoAntes = Math.abs(marcadorL - marcadorR) > restantes;
+    if (decidido || decididoAntes || ronda >= 10) {
+      const gano = marcadorL === marcadorR ? rnd() < 0.5 : marcadorL > marcadorR;
+      setPenales({ ...p, fase: "fin", ronda, gano });
+      setTimeout(() => finalizarPartidoSeleccion(gano), 1500);
+      return;
+    }
+    if (!rondaCompleta) { setPenales({ ...p, turno: "R", fase: "verRival", ronda }); return; }
+    setPenales({ ...p, turno: "L", fase: "elegirZona", ronda, zona: null });
+  };
+  const elegirZonaPenal = (zi) => setPenales({ ...penales, zona: zi, fase: "golpear", golpeInicio: performance.now() });
 
   const seguirDespuesPartido = async () => {
     if (car.jornada > totalJornadas()) { finTemporada(); return; }
@@ -1050,7 +1226,7 @@ export default function BanquilloCarrera() {
       });
       const miPais = mundo.paises.find(p => p.id === prev.paisId);
       const nuevaDivision = miPais.d1.some(c => c.id === prev.clubId) ? "d1" : "d2";
-      const nu = {
+      let nu = {
         ...prev, mundo, tablas,
         dinero: prev.dinero + premio,
         prestigio: clamp(prev.prestigio + (campeon && esD1 ? 12 : ascendio ? 8 : descendio ? -10 : pos <= 3 && esD1 ? 5 : 0), 0, 100),
@@ -1059,6 +1235,7 @@ export default function BanquilloCarrera() {
         proximaDivision: nuevaDivision,
         resumenTemp: { pos, nEquipos, campeon, premio, pichichi, balon: balon?.nombre, cumplioObjetivo, descendio, ascendio, vencen: vencen.map(j => j.nombre) },
       };
+      nu = { ...nu, ...chequearLogros(nu, { ascenso: ascendio }) };
       guardar(nu); return nu;
     });
     setPantalla("fintemporada");
@@ -1102,7 +1279,7 @@ export default function BanquilloCarrera() {
   const aceptarSeleccion = () => {
     setCar(prev => {
       const pais = PAISES.find(p => p.id === prev.paisId);
-      const nu = {
+      let nu = {
         ...prev, modo: "ambos",
         seleccion: {
           paisId: prev.paisId,
@@ -1110,9 +1287,42 @@ export default function BanquilloCarrera() {
           ciclo: { fase: "eliminatoria", jornadaQ: 1, rivales: PAISES.filter(p => p.id !== prev.paisId && Math.abs(p.base - pais.base) < 14).slice(0, 3), resultados: [], puntos: 0 },
         },
       };
+      nu = { ...nu, ...chequearLogros(nu, { dobleCargo: true }) };
       guardar(nu); return nu;
     });
     setPantalla("seleccionHub");
+  };
+
+  /* ---------- FICHAR POR UN CLUB MÁS GRANDE (oferta de fin de temporada) ---------- */
+  const ficharPorNuevoClub = (dest) => {
+    setCar(prev => {
+      const paisDest = prev.mundo.paises.find(p => p.id === dest.paisId);
+      const club = paisDest.d1.find(c => c.id === dest.clubId);
+      if (!club) return prev;
+      const carreraClubes = [...(prev.carreraClubes || []), {
+        club: prev.club.nombre, paisId: prev.paisId, temporadas: prev.temporada,
+        resumen: prev.resumenTemp ? (prev.resumenTemp.campeon ? "🏆 Campeón" : `${prev.resumenTemp.pos}º de ${prev.resumenTemp.nEquipos}`) : "",
+      }];
+      const tablas = {};
+      prev.mundo.paises.forEach(p => { tablas[`${p.id}_d1`] = tablaInicial(p.d1); tablas[`${p.id}_d2`] = tablaInicial(p.d2); });
+      const objetivo = club.str >= paisDest.base + 3 ? "Ser campeón" : club.str >= paisDest.base - 2 ? "Terminar en top 3" : "Salvar la categoría";
+      let nu = {
+        ...prev, paisId: dest.paisId, division: "d1", clubId: club.id, paisBase: paisDest.base, club,
+        tablas, objetivo, carreraClubes,
+        dinero: Math.round(club.str * 42000), presupuestoFichajes: Math.round(club.str * 26000),
+        sponsor: { nombre: pick(["CervezaGallo Corp", "TelCom Global", "AeroMaya", "Banco del Istmo", "VoltaEnergy"]), semanal: Math.round(club.str * 1300) },
+        calendario: makeCalendario(paisDest.d1.map(x => x.id)),
+        temporada: prev.temporada + 1, jornada: 1, formacion: prev.formacion, xiIds: null,
+        goleadoresLiga: {}, eventosVistos: 0, forma: 0, confianza: 60,
+        resumenTemp: null, proximaDivision: null, rumores: [],
+        noticias: [...prev.noticias, `📝 Nuevo reto: fichas por ${club.nombre} (${paisDest.nombre}).`].slice(-20),
+      };
+      nu.rumores = generarRumores(nu);
+      nu = { ...nu, ...chequearLogros(nu, { fichajeGrande: true }) };
+      guardar(nu); return nu;
+    });
+    setPantalla("hub");
+    toast("🖊 ¡Nuevo club, nueva era!");
   };
 
   /* ---------- ESTILOS ---------- */
@@ -1395,7 +1605,7 @@ export default function BanquilloCarrera() {
           </div>
           <div style={{ fontSize: 11, color: car.division === "d2" ? "#D8B4FE" : "#94A3B8", marginTop: 2 }}>{nombreDivision()} · {car.formacion}</div>
           <div style={{ display: "flex", gap: 11, marginTop: 7, fontSize: 11.5, flexWrap: "wrap" }}>
-            <span>⭐ <b style={{ color: "#FFB020" }}>{car.prestigio}</b></span>
+            <span>{rangoDT(car.prestigio).icon} <b style={{ color: "#FFB020" }}>{car.prestigio}</b> <span style={{ color: "#94A3B8" }}>{rangoDT(car.prestigio).txt}</span></span>
             <span>🏛 <b style={{ color: car.confianza < 30 ? "#E5484D" : "#1FA05A" }}>{car.confianza}</b></span>
             <span>😤 <b>{car.moral > 0 ? "+" : ""}{car.moral}</b></span>
             <span style={{ color: zonaRoja ? "#E5484D" : "inherit" }}>📊 <b>{pos}º/{nEquipos}</b>{zonaRoja ? " ⬇" : ""}</span>
@@ -1444,7 +1654,8 @@ export default function BanquilloCarrera() {
             <button style={S.ghost} onClick={() => setPantalla("analisis")}>📈 Análisis táctico</button>
             <button style={S.ghost} onClick={() => abrirConvo("presidente")}>🏛 Presidente</button>
             <button style={S.ghost} onClick={() => abrirConvo("prensa")}>🎤 Prensa</button>
-            {soySeleccion() ? <button style={{ ...S.ghost, borderColor: "#D8B4FE" }} onClick={() => setPantalla("seleccionHub")}>🌍 Mi Selección</button> : <div />}
+            <button style={{ ...S.ghost, borderColor: "#FFB02055" }} onClick={() => setPantalla("carrera")}>📜 Mi Carrera</button>
+            {soySeleccion() && <button style={{ ...S.ghost, borderColor: "#D8B4FE" }} onClick={() => setPantalla("seleccionHub")}>🌍 Mi Selección</button>}
           </div>
           {conDS && <div style={{ fontSize: 11.5, color: "#94A3B8", textAlign: "center" }}>Prestigio &lt; 40: el director deportivo elige objetivos de mercado y tu red de scouting es imprecisa (potenciales borrosos).</div>}
           {car.rumores.length > 0 && (
@@ -1513,7 +1724,7 @@ export default function BanquilloCarrera() {
             <div style={{ ...S.card, borderColor: "#FFB020", textAlign: "center" }}>
               <div style={{ fontSize: 40 }}>🏆</div>
               <div style={{ ...S.disp, fontSize: 22, color: "#FFB020" }}>¡¡CAMPEONES DEL MUNDO!!</div>
-              <button style={{ ...S.btn, marginTop: 10 }} onClick={() => setCar(p => { const nu = { ...p, prestigio: clamp(p.prestigio + 20, 0, 100), dinero: p.dinero + 2500000, titulos: [...p.titulos, `🌍 MUNDIAL T${p.temporada}`], seleccion: { ...p.seleccion, ciclo: { ...p.seleccion.ciclo, fase: "cerrado" } } }; guardar(nu); return nu; })}>COBRAR LA GLORIA (+20 ⭐, +$2.5M)</button>
+              <button style={{ ...S.btn, marginTop: 10 }} onClick={() => setCar(p => { let nu = { ...p, prestigio: clamp(p.prestigio + 20, 0, 100), dinero: p.dinero + 2500000, titulos: [...p.titulos, `🌍 MUNDIAL T${p.temporada}`], seleccion: { ...p.seleccion, ciclo: { ...p.seleccion.ciclo, fase: "cerrado" } } }; nu = { ...nu, ...chequearLogros(nu, { mundial: true }) }; guardar(nu); return nu; })}>COBRAR LA GLORIA (+20 ⭐, +$2.5M)</button>
             </div>
           )}
           {["fracaso", "eliminado", "cerrado"].includes(ciclo.fase) && (
@@ -1531,10 +1742,61 @@ export default function BanquilloCarrera() {
               </div>
             ))}
           </div>
+          <button style={{ ...S.ghost, borderColor: "#FFB02055" }} onClick={() => setPantalla("carrera")}>📜 Mi Carrera</button>
           {soyClub() && <button style={S.ghost} onClick={() => setPantalla("hub")}>🏟 Volver a mi club</button>}
         </div>
         <Toast />
         <ModalAjustes />
+      </div>
+    );
+  }
+
+  /* MI CARRERA: rango, logros, historial de clubes dirigidos */
+  if (pantalla === "carrera") {
+    const rango = rangoDT(car.prestigio);
+    const logrosSet = new Set(car.logros || []);
+    return (
+      <div style={S.app}>
+        <div style={{ padding: "18px 20px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ ...S.disp, fontSize: 20 }}>📜 MI CARRERA</div><Volver />
+        </div>
+        <div style={{ padding: "0 16px 24px", display: "flex", flexDirection: "column", gap: 10, overflowY: "auto" }}>
+          <div style={{ ...S.card, textAlign: "center", borderColor: "#FFB020" }}>
+            <div style={{ fontSize: 34 }}>{rango.icon}</div>
+            <div style={{ ...S.disp, fontSize: 20, color: "#FFB020" }}>{rango.txt.toUpperCase()}</div>
+            <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 4 }}>Prestigio {car.prestigio}/100 · Temporada {car.temporada}</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{ ...S.card, textAlign: "center" }}><div style={{ ...S.disp, fontSize: 22 }}>{car.titulos.length}</div><div style={S.tag}>Títulos</div></div>
+            <div style={{ ...S.card, textAlign: "center" }}><div style={{ ...S.disp, fontSize: 22 }}>{car.golesCarrera || 0}</div><div style={S.tag}>Goles anotados</div></div>
+          </div>
+          {car.titulos.length > 0 && <div style={S.card}><div style={S.tag}>🏆 PALMARÉS</div>{car.titulos.map((t, i) => <div key={i} style={{ fontSize: 13, marginTop: 6 }}>{t}</div>)}</div>}
+          {(car.carreraClubes || []).length > 0 && (
+            <div style={S.card}>
+              <div style={S.tag}>📋 HOJA DE RUTA</div>
+              {car.carreraClubes.map((c, i) => (
+                <div key={i} style={{ fontSize: 12.5, padding: "6px 0", borderBottom: "1px solid #1E3A2C" }}>
+                  {banderaDe(c.paisId)} <b>{c.club}</b> — {c.temporadas} temporada{c.temporadas !== 1 ? "s" : ""}{c.resumen ? ` · ${c.resumen}` : ""}
+                </div>
+              ))}
+              <div style={{ fontSize: 12.5, padding: "6px 0" }}>{car.club ? `${banderaDe(car.paisId)} ${car.club.nombre} — actual` : "Selección nacional — actual"}</div>
+            </div>
+          )}
+          <div style={S.card}>
+            <div style={S.tag}>🏅 LOGROS ({logrosSet.size}/{LOGROS.length})</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+              {LOGROS.map(l => (
+                <div key={l.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", opacity: logrosSet.has(l.id) ? 1 : 0.4 }}>
+                  <div style={{ fontSize: 20 }}>{logrosSet.has(l.id) ? l.icon : "🔒"}</div>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{l.nombre}</div>
+                    <div style={{ fontSize: 11.5, color: "#94A3B8" }}>{l.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -1984,6 +2246,80 @@ export default function BanquilloCarrera() {
     );
   }
 
+  /* TANDA DE PENALES — mini-juego 2D jugable: elige zona, calcula el golpe con la barra de potencia */
+  if (pantalla === "penales" && penales) {
+    const ZONAS_PEN = ["IZQUIERDA", "CENTRO", "DERECHA"];
+    const tiradorActual = penales.nuestros[penales.ronda % penales.nuestros.length];
+    const Portico = ({ resultado }) => (
+      <div style={{ position: "relative", height: 130, background: "linear-gradient(180deg,#1E5A38,#17452C)", borderRadius: 12, border: "2px solid #2E7D4F", overflow: "hidden", display: "flex" }}>
+        {[0, 1, 2].map(i => (
+          <div key={i} onClick={() => penales.fase === "elegirZona" && penales.turno === "L" && elegirZonaPenal(i)}
+            style={{ flex: 1, borderRight: i < 2 ? "2px dashed #0B121066" : "none", cursor: penales.fase === "elegirZona" ? "pointer" : "default", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 10 }}>
+            {penales.zona === i && (
+              <div style={{ width: 16, height: 16, borderRadius: "50%", background: resultado ? (resultado.gol ? "#1FA05A" : "#E5484D") : "#F2EFE6", boxShadow: "0 0 8px #000", transition: "all .35s" }} />
+            )}
+          </div>
+        ))}
+        <div style={{ position: "absolute", bottom: 6, left: "50%", transform: "translateX(-50%)", width: 22, height: 22, borderRadius: "50%", background: "#0B1210", border: "2px solid #F2EFE6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10 }}>🧤</div>
+      </div>
+    );
+    return (
+      <div style={S.app}>
+        <div style={{ padding: "18px 20px 10px", textAlign: "center" }}>
+          <div style={{ ...S.disp, fontSize: 18, color: "#FFB020" }}>🎯 TANDA DE PENALES</div>
+          <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>vs {penales.rivalNombre}</div>
+        </div>
+        <div style={{ padding: "0 20px", display: "flex", justifyContent: "center", alignItems: "center", gap: 14 }}>
+          <div style={{ ...S.disp, fontSize: 34 }}>{penales.marcadorL}</div>
+          <div style={{ ...S.mono, fontSize: 12, color: "#94A3B8" }}>ronda {Math.min(penales.ronda + 1, 10)}</div>
+          <div style={{ ...S.disp, fontSize: 34 }}>{penales.marcadorR}</div>
+        </div>
+        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+          <Portico resultado={penales.fase === "resultado" ? penales.ultimo : null} />
+          {penales.fase === "elegirZona" && (
+            <>
+              <div style={{ textAlign: "center", fontSize: 13 }}>⚽ Dispara <b style={{ color: "#FFB020" }}>{tiradorActual?.nombre}</b> — elige la zona</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                {ZONAS_PEN.map((z, i) => <button key={z} style={S.ghost} onClick={() => elegirZonaPenal(i)}>{z}</button>)}
+              </div>
+            </>
+          )}
+          {penales.fase === "golpear" && (
+            <>
+              <style>{"@keyframes barraPoder{0%{width:0%}50%{width:100%}100%{width:0%}}"}</style>
+              <div style={{ textAlign: "center", fontSize: 13 }}>Toca <b>¡GOLPEA!</b> con la barra en la zona verde para un disparo perfecto</div>
+              <div style={{ height: 22, borderRadius: 11, background: "#0B1210", border: "1px solid #2E7D4F", position: "relative", overflow: "hidden" }}>
+                <div style={{ position: "absolute", left: "60%", width: "35%", top: 0, bottom: 0, background: "#1FA05A44" }} />
+                <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "0%", background: "#FFB020", animation: "barraPoder 1.8s linear infinite" }} />
+              </div>
+              <button style={S.btn} onClick={dispararPenal}>¡GOLPEA!</button>
+            </>
+          )}
+          {penales.fase === "verRival" && (
+            <>
+              <div style={{ textAlign: "center", fontSize: 13 }}>Le toca cobrar a {penales.rivalNombre}...</div>
+              <button style={S.btn} onClick={dispararRival}>VER DISPARO RIVAL</button>
+            </>
+          )}
+          {penales.fase === "resultado" && penales.ultimo && (
+            <>
+              <div style={{ ...S.disp, fontSize: 22, textAlign: "center", color: penales.ultimo.gol ? "#1FA05A" : "#E5484D" }}>
+                {penales.ultimo.gol ? "¡GOL!" : penales.ultimo.adivina ? "¡ATAJADA!" : "¡AFUERA!"}
+              </div>
+              <div style={{ textAlign: "center", fontSize: 12.5, color: "#94A3B8" }}>{penales.ultimo.tirador} · {ZONAS_PEN[penales.ultimo.zona]}</div>
+              <button style={S.btn} onClick={continuarPenales}>CONTINUAR</button>
+            </>
+          )}
+          {penales.fase === "fin" && (
+            <div style={{ ...S.disp, fontSize: 22, textAlign: "center", color: "#FFB020" }}>
+              {penales.gano ? "¡GANAMOS LA TANDA!" : "PERDEMOS LA TANDA..."}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   /* POST-PARTIDO CON ESTADÍSTICAS */
   if (pantalla === "postpartido" && match) {
     const gane = match.gl > match.gr, empate = match.gl === match.gr;
@@ -2076,7 +2412,20 @@ export default function BanquilloCarrera() {
             </div>
           )}
           {!ofreceSel && car.modo === "club" && <div style={{ fontSize: 12, color: "#4B5E54", textAlign: "center" }}>Con prestigio ≥ 60, tu selección te llamará...</div>}
-          <button style={S.btn} onClick={nuevaTemporada}>SIGUIENTE TEMPORADA →</button>
+          {r.cumplioObjetivo && car.prestigio >= 40 && clubesPretendientes(car).length > 0 && (
+            <div style={{ ...S.card, borderColor: "#FFB020" }}>
+              <div style={{ fontWeight: 700 }}>📞 Ofertas de otros clubes</div>
+              <div style={{ fontSize: 12.5, color: "#94A3B8", margin: "6px 0" }}>Tu buena temporada llamó la atención. Puedes dar el salto o quedarte a terminar lo que empezaste.</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {clubesPretendientes(car).map(c => (
+                  <button key={c.clubId} style={{ ...S.ghost, textAlign: "left" }} onClick={() => ficharPorNuevoClub(c)}>
+                    {c.bandera} <b>{c.nombre}</b> <span style={{ ...S.mono, color: "#94A3B8", fontSize: 11 }}>({c.ligaNombre} · nivel {c.str})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <button style={S.btn} onClick={nuevaTemporada}>SIGUIENTE TEMPORADA CON {car.club.nombre.toUpperCase()} →</button>
         </div>
       </div>
     );
