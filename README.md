@@ -81,3 +81,27 @@ Para que funcione, en el repositorio de GitHub hay que activar
 El `base` en `vite.config.js` está configurado como `/el-banquillo/`, que
 debe coincidir con el nombre del repositorio en GitHub para que los assets
 carguen correctamente en `https://<usuario>.github.io/el-banquillo/`.
+
+## MCP: n8n-mcp
+
+El repo incluye `.mcp.json` con el servidor MCP
+[n8n-mcp](https://github.com/czlonkowski/n8n-mcp), que expone a Claude Code
+documentación y validación de los nodos de n8n (útil si en algún momento se
+automatiza algo del proyecto con workflows de n8n). Se ejecuta vía `npx`, sin
+instalación previa, y por defecto solo da acceso de solo lectura a la
+documentación de nodos (no requiere una instancia de n8n).
+
+Si quieres que además pueda gestionar workflows en tu propia instancia de
+n8n, añade tus credenciales a `.mcp.json`:
+
+```json
+"env": {
+  "MCP_MODE": "stdio",
+  "N8N_API_URL": "https://tu-instancia-n8n.com",
+  "N8N_API_KEY": "tu-api-key"
+}
+```
+
+No subas esas credenciales al repositorio si son sensibles; en ese caso
+configúralas en un `.mcp.json` local (git-ignorado) en vez de en el que está
+versionado.
